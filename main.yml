@@ -43,7 +43,7 @@ commands:
         type: string
       tag_regexp:
         description: Override the default git tag regexp if your project tags follow a different format.
-        default: "^v[0-9]*\.[0-9]*\.[0-9]*${PRERELEASE}\.[0-9]*"
+        default: "^v[0-9]*\\.[0-9]*\\.[0-9]*${PRERELEASE}\\.[0-9]*"
         type: string
       state_path:
         description: Relative or absolute path to a store build state for orb.
