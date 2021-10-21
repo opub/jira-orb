@@ -1,5 +1,5 @@
 version: 2.1
-orb-version: 1.0.1
+orb-version: 1.0.2
 
 description: >
   This orb reports the status of builds and deployments in CircleCI Projects to your Jira Cloud instance.
@@ -14,7 +14,7 @@ examples:
     usage:
       version: 2.1
       orbs:
-        jira: opub/jira-orb@1.0.1
+        jira: opub/jira-orb@1.0.2
       jobs:
         build:
           docker:
@@ -70,8 +70,6 @@ commands:
           when: always
           name: Update status in Atlassian Jira
           command: |
-            STATE_PATH="<<parameters.state_path>>"
-            ISSUE_REGEX="<<parameters.issue_regexp>>"
             ENVIRONMENT="<<parameters.environment>>"
 
             : ${<<parameters.token_name>>:?"Please provide a CircleCI API token for this orb to work!"} >&2
@@ -143,7 +141,8 @@ commands:
             parse_jira_key_array () {
                 echo "parse_jira_key_array"
                 # TODO this parsing of tags is also specific to my needs
-                ISSUE_KEYS=$(git log --pretty=oneline HEAD...$(git tag | grep "^v[0-9]*\.[0-9]*\.[0-9]*${PRERELEASE}\.[0-9]*" | tail -n1) | grep -oh "$ISSUE_REGEX" | sort | uniq)
+                TAG_NAME=$(git tag | grep "^v[0-9]*\.[0-9]*\.[0-9]*${PRERELEASE}\.[0-9]*" | tail -n1)
+                ISSUE_KEYS=$(git log --pretty=oneline HEAD...$TAG_NAME | grep -oh '<<parameters.issue_regexp>>' | sort | uniq || true)
                 if [ -z "$ISSUE_KEYS" ]; then
                     # No issue keys found.
                     echo "No issue keys found. This build does not contain a match for a Jira Issue. Please add your issue ID to the commit message or within the branch name."
@@ -326,6 +325,6 @@ commands:
             }
 
             # kick off
-            source $STATE_PATH
+            source <<parameters.state_path>>
             run
-            rm -f $STATE_PATH
+            rm -f <<parameters.state_path>>
