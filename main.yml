@@ -1,0 +1,332 @@
+version: 2.1
+orb-version: 1.0.0
+
+description: >
+  This orb reports the status of builds and deployments in CircleCI Projects to your Jira Cloud instance.
+  Requires that [CircleCI for Jira](https://marketplace.atlassian.com/apps/1215946) be installed in the Jira *Cloud* instance.
+
+orbs:
+  jq: circleci/jq@2.2
+
+examples:
+  notify-command:
+    description: Report the status of a job to Jira
+    usage:
+      version: 2.1
+      orbs:
+        jira: opub/jira-orb@1.0.0
+      jobs:
+        build:
+          docker:
+            - image: cimg/base:stable
+          steps:
+            - jira/notify:
+                environment: "<< pipeline.git.branch >>"
+                environment_type: development
+                job_type: deployment
+
+commands:
+
+  notify:
+
+    parameters:
+
+      token_name:
+        description: The name of environment variable containing CircleCI API Token. Required for all projects.
+        default: "CIRCLE_TOKEN"
+        type: string
+      environment:
+        description: For deployments. Indicates the name of target environment. Default is the CircleCI Branch Name.
+        default: "${CIRCLE_BRANCH}"
+        type: string
+      issue_regexp:
+        description: Override the default project key regexp if your project keys follow a different format.
+        default: "[A-Z]{2,30}-[0-9]+"
+        type: string
+      state_path:
+        description: Relative or absolute path to a store build state for orb.
+        default: "./jira-orb.status"
+        type: string
+      service_id:
+        description: Specify the JSD service ID for the project this notification targets.
+        type: string
+        default: ''
+
+    steps:
+      - jq/install:
+          when: always
+
+      - run:
+          name: JIRA - Setting Failure Condition
+          command: |
+            echo 'JIRA_BUILD_STATUS="failed"' > <<parameters.state_path>>
+          when: on_fail
+
+      - run:
+          name: JIRA - Setting Success Condition
+          command: |
+            echo 'JIRA_BUILD_STATUS="successful"' > <<parameters.state_path>>
+          when: on_success
+
+      - run:
+          when: always
+          name: Update status in Atlassian Jira
+          command: |
+            : ${<<parameters.token_name>>:?"Please provide a CircleCI API token for this orb to work!"} >&2
+            if [[ $(echo $CIRCLE_REPOSITORY_URL | grep github.com) ]]; then
+              VCS_TYPE=github
+            else
+              VCS_TYPE=bitbucket
+            fi
+
+            ENVIRONMENT="<<parameters.environment>>"
+            ISSUE_REGEX="<<parameters.issue_regexp>>"
+
+            # TODO this is specific to my use case
+            case "$ENVIRONMENT" in
+            dev*)
+                JOB_TYPE=deployment
+                ENVIRONMENT_TYPE=development
+              ;;
+            qa*)
+                JOB_TYPE=deployment
+                ENVIRONMENT_TYPE=testing
+              ;;
+            *)
+                JOB_TYPE=build
+                ENVIRONMENT_TYPE=unmapped
+              ;;
+            esac
+
+            run () {
+                echo "running"
+                verify_api_key
+                parse_jira_key_array
+
+                if [[ -n "${ISSUE_KEYS}" ]]; then
+                    check_workflow_status
+                    if [ "${JOB_TYPE}" = "deployment" ]; then
+                        generate_json_payload_deployment
+                    else
+                        generate_json_payload_build
+                    fi
+                    post_to_jira
+                else
+                    # If no issue key is found.
+                    echo "No Jira issue keys found in commit subjects or branch name, skipping."
+                    exit 0
+                fi
+            }
+
+            verify_api_key () {
+                echo "verify_api_key"
+                URL="https://circleci.com/api/v2/me?circle-token=${CIRCLE_TOKEN}"
+                fetch $URL _apikey.json
+                jq -e '.login' _apikey.json
+            }
+
+            fetch () {
+                echo "fetch $1"
+                URL="$1"
+                OFILE="$2"
+                RESP=$(curl -w "%{http_code}" -s --user "${CIRCLE_TOKEN}:" \
+                    -o "${OFILE}" \
+                    "${URL}")
+
+                echo "${RESP}:${URL}"
+                if [[ "$RESP" != "20"* ]]; then
+                    echo "Curl failed with code ${RESP}. full response below."
+                    cat $OFILE
+                    exit 1
+                fi
+            }
+
+            parse_jira_key_array () {
+                echo "parse_jira_key_array"
+                # TODO this parsing of tags is also specific to my needs
+                ISSUE_KEYS=$(git log --pretty=oneline HEAD...$(git tag | grep "^v[0-9]*\.[0-9]*\.[0-9]*${PRERELEASE}\.[0-9]*" | tail -n1) | grep -oh '[A-Z][A-Z]-[0-9]*' | sort | uniq)
+                if [ -z "$ISSUE_KEYS" ]; then
+                    # No issue keys found.
+                    echo "No issue keys found. This build does not contain a match for a Jira Issue. Please add your issue ID to the commit message or within the branch name."
+                    exit 0
+                fi
+                # convert array to string
+                NEW_KEYS=$( IFS='|'; echo "${ISSUE_KEYS[*]}" );
+                echo $NEW_KEYS
+            }
+
+            check_workflow_status () {
+                echo "check_workflow_status"
+                URL="https://circleci.com/api/v2/workflow/${CIRCLE_WORKFLOW_ID}"
+                fetch $URL _workflow.json
+                export WORKFLOW_STATUS=$(jq -r '.status' _workflow.json)
+                export CIRCLE_PIPELINE_NUMBER=$(jq -r '.pipeline_number' _workflow.json)
+                echo "This job is passing, however another job in workflow is ${WORKFLOW_STATUS}"
+
+                if [ "${JOB_TYPE}" != "deployment" ]; then
+                    # deployments are special, cause they pass or fail alone.
+                    # but jobs are stuck togehter, and they must respect status of workflow
+                    if [[ "$WORKFLOW_STATUS" == "fail"* ]]; then
+                        export JIRA_BUILD_STATUS="failed"
+                    fi
+                fi
+            }
+
+            generate_json_payload_build () {
+                echo "generate_json_payload_build"
+                iso_time=$(date '+%Y-%m-%dT%T%z'| sed -e 's/\([0-9][0-9]\)$/:\1/g')
+                echo {} | jq \
+                --arg time_str "$(date +%s)" \
+                --arg lastUpdated "${iso_time}" \
+                --arg pipelineNumber "${CIRCLE_PIPELINE_NUMBER}" \
+                --arg projectName "${CIRCLE_PROJECT_REPONAME}" \
+                --arg state "${JIRA_BUILD_STATUS}" \
+                --arg jobName "${CIRCLE_JOB}" \
+                --arg buildNumber "${CIRCLE_BUILD_NUM}" \
+                --arg url "${CIRCLE_BUILD_URL}" \
+                --arg workflowUrl "https://circleci.com/workflow-run/${CIRCLE_WORKFLOW_ID}" \
+                --arg commit "${CIRCLE_SHA1}" \
+                --arg refUri "${CIRCLE_REPOSITORY_URL}/tree/${CIRCLE_BRANCH}" \
+                --arg repositoryUri "${CIRCLE_REPOSITORY_URL}" \
+                --arg branchName "${CIRCLE_BRANCH}" \
+                --arg workflowId "${CIRCLE_WORKFLOW_ID}" \
+                --arg repoName "${CIRCLE_PROJECT_REPONAME}" \
+                --arg display "${CIRCLE_PROJECT_REPONAME}"  \
+                --arg description "${CIRCLE_PROJECT_REPONAME} #${CIRCLE_BUILD_NUM} ${CIRCLE_JOB}" \
+                --argjson issueKeys "$(printf '\"%s\"\n' "${ISSUE_KEYS[@]}" | jq -s)" \
+                '
+                ($time_str | tonumber) as $time_num |
+                {
+                    "builds": [
+                    {
+                        "schemaVersion": "1.0",
+                        "pipelineId": $projectName,
+                        "buildNumber": $pipelineNumber,
+                        "updateSequenceNumber": $time_str,
+                        "displayName": $display,
+                        "description": $description,
+                        "url": $workflowUrl,
+                        "state": $state,
+                        "lastUpdated": $lastUpdated,
+                        "issueKeys": $issueKeys
+                    }
+                    ]
+                }
+                ' > _jirastatus.json
+            }
+
+            generate_json_payload_deployment () {
+                echo "generate_json_payload_deployment"
+                echo "Update Jira with status: ${JIRA_BUILD_STATUS} for ${CIRCLE_PIPELINE_NUMBER}"
+                iso_time=$(date '+%Y-%m-%dT%T%z'| sed -e 's/\([0-9][0-9]\)$/:\1/g')
+                echo {} | jq \
+                --arg time_str "$(date +%s)" \
+                --arg lastUpdated "${iso_time}" \
+                --arg state "${JIRA_BUILD_STATUS}" \
+                --arg buildNumber "${CIRCLE_BUILD_NUM}" \
+                --arg pipelineNumber "${CIRCLE_PIPELINE_NUMBER}" \
+                --arg projectName "${CIRCLE_PROJECT_REPONAME}" \
+                --arg url "${CIRCLE_BUILD_URL}" \
+                --arg commit "${CIRCLE_SHA1}" \
+                --arg refUri "${CIRCLE_REPOSITORY_URL}/tree/${CIRCLE_BRANCH}" \
+                --arg repositoryUri "${CIRCLE_REPOSITORY_URL}" \
+                --arg branchName "${CIRCLE_BRANCH}" \
+                --arg workflowId "${CIRCLE_WORKFLOW_ID}" \
+                --arg workflowUrl "https://circleci.com/workflow-run/${CIRCLE_WORKFLOW_ID}" \
+                --arg repoName "${CIRCLE_PROJECT_REPONAME}" \
+                --arg pipelineDisplay "#${CIRCLE_PIPELINE_NUMBER} ${CIRCLE_PROJECT_REPONAME}"  \
+                --arg deployDisplay "#${CIRCLE_PIPELINE_NUMBER}  ${CIRCLE_PROJECT_REPONAME} - ${ENVIRONMENT}"  \
+                --arg description "${CIRCLE_PROJECT_REPONAME} #${CIRCLE_PIPELINE_NUMBER} ${CIRCLE_JOB} ${ENVIRONMENT}" \
+                --arg envId "${CIRCLE_WORKFLOW_ID}-${ENVIRONMENT}" \
+                --arg envName "${ENVIRONMENT}" \
+                --arg envType "${ENVIRONMENT_TYPE}" \
+                --argjson issueKeys "$(printf '\"%s\"\n' "${ISSUE_KEYS[@]}" | jq -s)" \
+                '
+                ($time_str | tonumber) as $time_num |
+                {
+                    "deployments": [
+                    {
+                        "schemaVersion": "1.0",
+                        "pipeline": {
+                        "id": $repoName,
+                        "displayName": $pipelineDisplay,
+                        "url": $workflowUrl
+                        },
+                        "deploymentSequenceNumber": $pipelineNumber,
+                        "updateSequenceNumber": $time_str,
+                        "displayName": $deployDisplay,
+                        "description": $description,
+                        "url": $url,
+                        "state": $state,
+                        "lastUpdated": $lastUpdated,
+                        "associations": [
+                        {
+                            "associationType": "issueKeys",
+                            "values": $issueKeys
+                        },
+                        {
+                            "associationType": "serviceIdOrKeys",
+                            "values": ["<< parameters.service_id >>"]
+                        }
+                        ],
+                        "environment":{
+                        "id": $envId,
+                        "displayName": $envName,
+                        "type": $envType
+                        }
+                    }
+                    ]
+                }
+                ' > _jirastatus.json
+            }
+
+            post_to_jira () {
+                echo "post_to_jira"
+                HTTP_STATUS=$(curl \
+                -u "${CIRCLE_TOKEN}:" \
+                -s -w "%{http_code}" -o _curlreponse.txt \
+                -H "Content-Type: application/json" \
+                -H "Accept: application/json" \
+                -X POST "https://circleci.com/api/v1.1/project/${VCS_TYPE}/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}/jira/${JOB_TYPE}" --data @_jirastatus.json)
+
+                echo "Results from Jira: "
+                if [ "${HTTP_STATUS}" != "200" ];then
+                    echo "Error calling Jira, result: ${HTTP_STATUS}" >&2
+                    jq '.' _curlreponse.txt
+                    exit 0
+                fi
+
+                case "${JOB_TYPE}" in
+                    "build")
+                    if jq -e '.unknownIssueKeys[0]' _curlreponse.txt > /dev/null; then
+                        echo "ERROR: unknown issue key"
+                        jq '.' _curlreponse.txt
+                        exit 0
+                    fi
+                    ;;
+                    "deployment")
+                    if jq -e '.unknownAssociations[0]' _curlreponse.txt > /dev/null; then
+                        echo "ERROR: unknown association"
+                        jq '.' _curlreponse.txt
+                        exit 0
+                    fi
+                    if jq -e '.rejectedDeployments[0]' _curlreponse.txt > /dev/null; then
+                        echo "ERROR: Deployment rejected"
+                        jq '.' _curlreponse.txt
+                        exit 0
+                    fi
+                    ;;
+                esac
+
+                # If reached this point, the deployment was a success.
+                echo
+                jq '.' _curlreponse.txt
+                echo
+                echo
+                echo "Success!"
+            }
+
+            # kick off
+            source <<parameters.state_path>>
+            run
+            rm -f <<parameters.state_path>>
