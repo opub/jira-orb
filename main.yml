@@ -1,5 +1,5 @@
 version: 2.1
-orb-version: 1.0.0
+orb-version: 1.0.1
 
 description: >
   This orb reports the status of builds and deployments in CircleCI Projects to your Jira Cloud instance.
@@ -14,16 +14,14 @@ examples:
     usage:
       version: 2.1
       orbs:
-        jira: opub/jira-orb@1.0.0
+        jira: opub/jira-orb@1.0.1
       jobs:
         build:
           docker:
             - image: cimg/base:stable
           steps:
-            - jira/notify:
-                environment: "<< pipeline.git.branch >>"
-                environment_type: development
-                job_type: deployment
+            - checkout
+            - jira/notify
 
 commands:
 
@@ -72,15 +70,16 @@ commands:
           when: always
           name: Update status in Atlassian Jira
           command: |
+            STATE_PATH="<<parameters.state_path>>"
+            ISSUE_REGEX="<<parameters.issue_regexp>>"
+            ENVIRONMENT="<<parameters.environment>>"
+
             : ${<<parameters.token_name>>:?"Please provide a CircleCI API token for this orb to work!"} >&2
             if [[ $(echo $CIRCLE_REPOSITORY_URL | grep github.com) ]]; then
               VCS_TYPE=github
             else
               VCS_TYPE=bitbucket
             fi
-
-            ENVIRONMENT="<<parameters.environment>>"
-            ISSUE_REGEX="<<parameters.issue_regexp>>"
 
             # TODO this is specific to my use case
             case "$ENVIRONMENT" in
@@ -144,7 +143,7 @@ commands:
             parse_jira_key_array () {
                 echo "parse_jira_key_array"
                 # TODO this parsing of tags is also specific to my needs
-                ISSUE_KEYS=$(git log --pretty=oneline HEAD...$(git tag | grep "^v[0-9]*\.[0-9]*\.[0-9]*${PRERELEASE}\.[0-9]*" | tail -n1) | grep -oh '[A-Z][A-Z]-[0-9]*' | sort | uniq)
+                ISSUE_KEYS=$(git log --pretty=oneline HEAD...$(git tag | grep "^v[0-9]*\.[0-9]*\.[0-9]*${PRERELEASE}\.[0-9]*" | tail -n1) | grep -oh "$ISSUE_REGEX" | sort | uniq)
                 if [ -z "$ISSUE_KEYS" ]; then
                     # No issue keys found.
                     echo "No issue keys found. This build does not contain a match for a Jira Issue. Please add your issue ID to the commit message or within the branch name."
@@ -152,7 +151,7 @@ commands:
                 fi
                 # convert array to string
                 NEW_KEYS=$( IFS='|'; echo "${ISSUE_KEYS[*]}" );
-                echo $NEW_KEYS
+                echo "found keys: $NEW_KEYS"
             }
 
             check_workflow_status () {
@@ -327,6 +326,6 @@ commands:
             }
 
             # kick off
-            source <<parameters.state_path>>
+            source $STATE_PATH
             run
-            rm -f <<parameters.state_path>>
+            rm -f $STATE_PATH
