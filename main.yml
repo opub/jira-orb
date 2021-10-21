@@ -1,9 +1,9 @@
 version: 2.1
-orb-version: 1.0.2
+orb-version: 1.0.3
 
 description: >
-  This orb reports the status of builds and deployments in CircleCI Projects to your Jira Cloud instance.
-  Requires that [CircleCI for Jira](https://marketplace.atlassian.com/apps/1215946) be installed in the Jira *Cloud* instance.
+  This orb reports the status of builds and deployments in CircleCI projects to your Jira Cloud instance.
+  Requires that CircleCI for Jira (https://marketplace.atlassian.com/apps/1215946) be installed in the Jira Cloud instance.
 
 orbs:
   jq: circleci/jq@2.2
@@ -14,7 +14,7 @@ examples:
     usage:
       version: 2.1
       orbs:
-        jira: opub/jira-orb@1.0.2
+        jira: opub/jira-orb@1.0.3
       jobs:
         build:
           docker:
