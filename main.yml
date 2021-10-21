@@ -39,7 +39,11 @@ commands:
         type: string
       issue_regexp:
         description: Override the default project key regexp if your project keys follow a different format.
-        default: "[A-Z]{2,30}-[0-9]+"
+        default: "[A-Z][A-Z]-[0-9]*"
+        type: string
+      tag_regexp:
+        description: Override the default git tag regexp if your project tags follow a different format.
+        default: "^v[0-9]*\.[0-9]*\.[0-9]*${PRERELEASE}\.[0-9]*"
         type: string
       state_path:
         description: Relative or absolute path to a store build state for orb.
@@ -132,7 +136,7 @@ commands:
 
                 echo "${RESP}:${URL}"
                 if [[ "$RESP" != "20"* ]]; then
-                    echo "Curl failed with code ${RESP}. full response below."
+                    echo "curl failed with code ${RESP}. full response below."
                     cat $OFILE
                     exit 1
                 fi
@@ -140,9 +144,8 @@ commands:
 
             parse_jira_key_array () {
                 echo "parse_jira_key_array"
-                # TODO this parsing of tags is also specific to my needs
-                TAG_NAME=$(git tag | grep "^v[0-9]*\.[0-9]*\.[0-9]*${PRERELEASE}\.[0-9]*" | tail -n1)
-                ISSUE_KEYS=$(git log --pretty=oneline HEAD...$TAG_NAME | grep -oh '<<parameters.issue_regexp>>' | sort | uniq || true)
+                PREV_TAG=$(git tag | grep '<<parameters.tag_regexp>>' | tail -n2 | head -n1)
+                ISSUE_KEYS=$(git log --pretty=oneline HEAD...$PREV_TAG | grep -oh '<<parameters.issue_regexp>>' | sort | uniq || true)
                 if [ -z "$ISSUE_KEYS" ]; then
                     # No issue keys found.
                     echo "No issue keys found. This build does not contain a match for a Jira Issue. Please add your issue ID to the commit message or within the branch name."
