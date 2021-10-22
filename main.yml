@@ -1,5 +1,5 @@
 version: 2.1
-orb-version: 1.0.4
+orb-version: 1.0.5
 
 description: >
   This orb reports the status of builds and deployments in CircleCI projects to your Jira Cloud instance.
@@ -14,7 +14,7 @@ examples:
     usage:
       version: 2.1
       orbs:
-        jira: opub/jira-orb@1.0.4
+        jira: opub/jira-orb@1.0.5
       jobs:
         build:
           docker:
@@ -149,7 +149,7 @@ commands:
                     exit 0
                 fi
                 # convert array to string
-                ISSUE_KEYS=$(printf '%s\n' "${KEY_ARRAY[@]}" | jq -R . | jq -c -s .)"
+                ISSUE_KEYS=$(printf '%s\n' "${KEY_ARRAY[@]}" | jq -R . | jq -c -s .)
                 echo "found keys $ISSUE_KEYS"
             }
 
