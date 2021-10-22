@@ -1,5 +1,5 @@
 version: 2.1
-orb-version: 1.0.3
+orb-version: 1.0.4
 
 description: >
   This orb reports the status of builds and deployments in CircleCI projects to your Jira Cloud instance.
@@ -14,7 +14,7 @@ examples:
     usage:
       version: 2.1
       orbs:
-        jira: opub/jira-orb@1.0.3
+        jira: opub/jira-orb@1.0.4
       jobs:
         build:
           docker:
@@ -49,10 +49,6 @@ commands:
         description: Relative or absolute path to a store build state for orb.
         default: "./jira-orb.status"
         type: string
-      service_id:
-        description: Specify the JSD service ID for the project this notification targets.
-        type: string
-        default: ''
 
     steps:
       - jq/install:
@@ -144,16 +140,17 @@ commands:
 
             parse_jira_key_array () {
                 echo "parse_jira_key_array"
-                PREV_TAG=$(git tag | grep '<<parameters.tag_regexp>>' | tail -n2 | head -n1)
-                ISSUE_KEYS=$(git log --pretty=oneline HEAD...$PREV_TAG | grep -oh '<<parameters.issue_regexp>>' | sort | uniq || true)
-                if [ -z "$ISSUE_KEYS" ]; then
+                PREV_TAG=$(git tag | grep "<<parameters.tag_regexp>>" | tail -n2 | head -n1)
+                echo "found tag $PREV_TAG"
+                KEY_ARRAY=$(git log --pretty=oneline HEAD...$PREV_TAG | grep -oh '<<parameters.issue_regexp>>' | sort | uniq || true)
+                if [ -z "$KEY_ARRAY" ]; then
                     # No issue keys found.
                     echo "No issue keys found. This build does not contain a match for a Jira Issue. Please add your issue ID to the commit message or within the branch name."
                     exit 0
                 fi
                 # convert array to string
-                NEW_KEYS=$( IFS='|'; echo "${ISSUE_KEYS[*]}" );
-                echo "found keys: $NEW_KEYS"
+                ISSUE_KEYS=$(printf '%s\n' "${KEY_ARRAY[@]}" | jq -R . | jq -c -s .)"
+                echo "found keys $ISSUE_KEYS"
             }
 
             check_workflow_status () {
@@ -194,7 +191,7 @@ commands:
                 --arg repoName "${CIRCLE_PROJECT_REPONAME}" \
                 --arg display "${CIRCLE_PROJECT_REPONAME}"  \
                 --arg description "${CIRCLE_PROJECT_REPONAME} #${CIRCLE_BUILD_NUM} ${CIRCLE_JOB}" \
-                --argjson issueKeys "$(printf '\"%s\"\n' "${ISSUE_KEYS[@]}" | jq -s)" \
+                --argjson issueKeys "${ISSUE_KEYS}" \
                 '
                 ($time_str | tonumber) as $time_num |
                 {
@@ -241,7 +238,7 @@ commands:
                 --arg envId "${CIRCLE_WORKFLOW_ID}-${ENVIRONMENT}" \
                 --arg envName "${ENVIRONMENT}" \
                 --arg envType "${ENVIRONMENT_TYPE}" \
-                --argjson issueKeys "$(printf '\"%s\"\n' "${ISSUE_KEYS[@]}" | jq -s)" \
+                --argjson issueKeys "${ISSUE_KEYS}" \
                 '
                 ($time_str | tonumber) as $time_num |
                 {
@@ -264,10 +261,6 @@ commands:
                         {
                             "associationType": "issueKeys",
                             "values": $issueKeys
-                        },
-                        {
-                            "associationType": "serviceIdOrKeys",
-                            "values": ["<< parameters.service_id >>"]
                         }
                         ],
                         "environment":{
